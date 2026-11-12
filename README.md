@@ -29,7 +29,24 @@ přenese dopředu.
 - macOS 14 Sonoma nebo novější (vyvíjeno a testováno na macOS 26).
 - Pro sestavení Xcode 16+ (Swift 5.10+) a volitelně certifikát Apple Development.
 
-## Instalace
+## Instalace z DMG (pro uživatele)
+
+1. Stáhněte `DockPeek-<verze>.dmg` ze stránky
+   [Releases](https://github.com/kolarcik/DockPeek/releases).
+2. Otevřete DMG a přetáhněte **DockPeek** do složky **Aplikace**.
+3. Spusťte DockPeek ze složky Aplikace a projděte průvodce nastavením
+   (viz [První spuštění a oprávnění](#3-první-spuštění-a-oprávnění)).
+
+Oficiální DMG je podepsané certifikátem Developer ID a notarizované u Apple,
+takže se otevře bez varování.
+
+> DMG sestavené bez Developer ID (viz níže) macOS při prvním otevření zablokuje.
+> Pak v **Nastavení systému → Soukromí a zabezpečení** u zprávy o DockPeek
+> klikněte na **Přesto otevřít**.
+
+DMG obsahuje univerzální aplikaci pro Macy s Apple Silicon i Intel.
+
+## Sestavení ze zdrojových kódů
 
 ### 1. Sestavení
 
@@ -41,8 +58,9 @@ cd DockPeek
 
 Výsledná aplikace je v `build/DockPeek.app`.
 
-`build.sh` aplikaci podepíše prvním nalezeným certifikátem **Apple Development**.
-Jiný certifikát nastavíte proměnnou `CODESIGN_IDENTITY`:
+`build.sh` aplikaci podepíše certifikátem **Apple Development** týmu `3ZN9TSG9S7`
+(výběr je v `signing.sh`). Jiný tým nastavíte proměnnou `TEAM_ID`, konkrétní
+certifikát proměnnou `CODESIGN_IDENTITY`:
 
 ```bash
 CODESIGN_IDENTITY="Apple Development: Jméno Příjmení (TEAMID)" ./build.sh
@@ -108,6 +126,11 @@ tccutil reset Accessibility cz.kolarcik.DockPeek
 **Ovládání Spotify nefunguje**
 Povolte DockPeek v Nastavení systému → Soukromí a zabezpečení → Automatizace → Spotify.
 
+**Po instalaci nové verze chce DockPeek oprávnění znovu**
+macOS váže oprávnění na podpis aplikace. Verze podepsaná jiným certifikátem
+(např. vlastní build vs. DMG) je pro systém jiná aplikace – povolte ji znovu,
+případně nejdřív resetujte staré záznamy příkazy `tccutil reset` výše.
+
 **Diagnostika**
 Spuštění s logováním zapisuje do `/tmp/dockpeek.log`, co se děje při najetí na ikony:
 
@@ -148,10 +171,40 @@ Sources/DockPeek/
 └── StatusIcon.swift     – ikona do stavového řádku
 Resources/               – Info.plist, ikona aplikace, logo autora
 Tools/make-icon.swift    – generátor ikony aplikace
-build.sh                 – sestavení a podepsání DockPeek.app
+build.sh                 – sestavení a podepsání DockPeek.app (vývoj)
+make-dmg.sh              – instalační DMG pro distribuci
 ```
 
-Užitečné příkazy:
+### Vytvoření instalačního DMG
+
+```bash
+./make-dmg.sh
+```
+
+Vytvoří `build/DockPeek-<verze>.dmg` (verze se bere z `Resources/Info.plist`):
+univerzální binárka, podpis s hardened runtime a entitlementem pro AppleScript
+(`Resources/DockPeek.entitlements`), DMG se zástupcem složky Aplikace a ikonou svazku.
+
+Aby šla aplikace stažená z internetu otevřít bez varování, musí být podepsaná
+certifikátem **Developer ID Application** a notarizovaná u Apple:
+
+1. V [Apple Developer → Certificates](https://developer.apple.com/account/resources/certificates/list)
+   vytvořte certifikát **Developer ID Application** (může jen Account Holder týmu)
+   a nainstalujte ho do Klíčenky.
+2. Jednou uložte přihlašovací údaje pro notarizaci do Klíčenky
+   (heslo pro aplikace z [account.apple.com](https://account.apple.com)):
+   ```bash
+   xcrun notarytool store-credentials dockpeek --apple-id <apple-id> --team-id <TEAMID>
+   ```
+3. Sestavte DMG s notarizací:
+   ```bash
+   NOTARY_PROFILE=dockpeek ./make-dmg.sh
+   ```
+
+Skript certifikát Developer ID najde sám; bez něj podepíše DMG certifikátem
+Apple Development a upozorní, že DMG není notarizované.
+
+### Užitečné příkazy
 
 ```bash
 swift build                       # rychlá kontrola kompilace

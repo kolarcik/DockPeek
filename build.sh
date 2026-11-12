@@ -17,7 +17,8 @@ mkdir -p "$APP/Contents/Resources"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp Resources/CreatorLogo.png Resources/CreatorLogo-dark.png "$APP/Contents/Resources/"
 
-IDENTITY="${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk '/Apple Development/ {print $2; exit}')}"
+source ./signing.sh
+IDENTITY="${CODESIGN_IDENTITY:-$(find_identity "Apple Development")}"
 IDENTITY="${IDENTITY:--}"
 codesign --force --sign "$IDENTITY" "$APP"
 echo "Hotovo: $APP (podpis: $IDENTITY)"
