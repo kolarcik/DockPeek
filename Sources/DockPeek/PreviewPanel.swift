@@ -324,9 +324,18 @@ final class PreviewController {
     private var pendingShow: DispatchWorkItem?
     private var trackingTimer: Timer?
     private var generation = 0
+    /// Od kdy je myš mimo panel i bezpečnou zónu (krátké vyjetí se toleruje).
+    private var outsideSince: Date?
+    /// Jak dlouho smí být myš mimo, než panel zmizí.
+    private let outsideGrace: TimeInterval = 0.3
+    /// Prodleva přepnutí na sousední ikonu, když myš míří k panelu (bezpečná zóna).
+    /// Přepne se jen tehdy, když se myš na sousední ikoně opravdu zastaví.
+    private let switchDelayInZone: TimeInterval = 0.25
+    /// Prodleva přepnutí mimo zónu – i tady jen při zastavení, ne při průjezdu.
+    private let switchDelay: TimeInterval = 0.12
 
     /// Prodleva před prvním zobrazením (aby panel neblikal při přejíždění přes Dock).
-    var showDelay: TimeInterval = 0.2
+    var showDelay: TimeInterval = 0.18
 
     func dockHoverChanged(_ item: DockItem?) {
         pendingShow?.cancel()
@@ -336,22 +345,33 @@ final class PreviewController {
             suppressedItem = nil      // myš odjela jinam – znovu normálně
         }
         guard let item else { return }  // myš opustila Dock – rozhodne trackingTimer
+        // Spodní okraj panelu leží nad zvětšenými ikonami Docku a Dock o panelu neví –
+        // dál hlásí najetí na ikonu pod ním. Dokud je myš v panelu, nic nepřepínej.
+        if isMouseInPanel { return }
+        // Myš cestou k panelu šikmo přejíždí přes sousední ikony – v bezpečné zóně
+        // nereaguj hned, jinak by panel přeskočil na jinou aplikaci nebo zmizel.
+        let inZone = panel.isVisible && isInSafeZone(NSEvent.mouseLocation)
         guard item.isApplication, let app = item.runningApp else {
             // složka, koš, neběžící aplikace…
-            if panel.isVisible { hide() }
+            if panel.isVisible && !inZone { hide() }
             return
         }
         if panel.isVisible, item == currentItem { return }
 
-        let work = DispatchWorkItem { [weak self] in self?.show(item: item, app: app) }
+        let delay = panel.isVisible ? (inZone ? switchDelayInZone : switchDelay) : showDelay
+        let work = DispatchWorkItem { [weak self] in
+            self?.pendingShow = nil
+            self?.show(item: item, app: app)
+        }
         pendingShow = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + (panel.isVisible ? 0.05 : showDelay), execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     private func show(item: DockItem, app: NSRunningApplication) {
         // Pokud mezitím myš odjela jinam, nic neukazuj.
         guard let now = dockObserver?.currentItem(), now == item else { return }
         if DockMenu.isOpen() { suppressedItem = item; return }
+        if item != currentItem, isMouseInPanel { return }
 
         let windows = WindowProvider.windows(for: app)
         let player = MediaPlayer.forApp(app)
@@ -499,6 +519,7 @@ final class PreviewController {
         currentWindows = []
         currentMedia = nil
         trackingTicks = 0
+        outsideSince = nil
         panel.orderOut(nil)
     }
 
@@ -560,30 +581,59 @@ final class PreviewController {
             refreshMedia(player, generation: generation)
         }
         let mouse = NSEvent.mouseLocation
-        if panel.frame.insetBy(dx: -2, dy: -2).contains(mouse) { return }
-        if item.frame.contains(mouse) || corridor(item: item.frame).contains(mouse) { return }
+        // Myš sjela z panelu rovnou na jinou ikonu: Dock ji hlásil už dřív (když byla myš
+        // v panelu a hlášení se ignorovalo) a znovu ji neohlásí – naplánuj přepnutí sám.
+        if pendingShow == nil, !isMouseInPanel, let hovered = dockObserver?.currentItem(),
+           hovered.isApplication, hovered != item {
+            dockHoverChanged(hovered)
+        }
+        if panel.frame.insetBy(dx: -8, dy: -8).contains(mouse) || isInSafeZone(mouse) {
+            outsideSince = nil
+            return
+        }
         // Myš je nad jinou aplikací v Docku – přepnutí řeší dockHoverChanged.
-        if let hovered = dockObserver?.currentItem(), hovered.isApplication { return }
-        hide()
+        if let hovered = dockObserver?.currentItem(), hovered.isApplication {
+            outsideSince = nil
+            return
+        }
+        // Krátké vyjetí mimo (nepřesný šikmý pohyb) ještě panel neschová.
+        let since = outsideSince ?? Date()
+        outsideSince = since
+        if Date().timeIntervalSince(since) >= outsideGrace { hide() }
     }
 
-    /// Mezera mezi ikonou a panelem, přes kterou myš přejíždí do panelu.
+    private var isMouseInPanel: Bool {
+        panel.isVisible && panel.frame.insetBy(dx: -4, dy: -4).contains(NSEvent.mouseLocation)
+    }
+
+    /// Je bod v panelu nebo v bezpečné zóně mezi ikonou a panelem?
+    private func isInSafeZone(_ point: CGPoint) -> Bool {
+        guard let item = currentItem else { return false }
+        return item.frame.contains(point) || safeZone(item: item.frame).contains(point)
+    }
+
+    /// Bezpečná zóna, přes kterou myš přejíždí od ikony do panelu: celý pás mezi
+    /// panelem a okrajem obrazovky v šířce panelu. Pokrývá šikmý i obloukový pohyb
+    /// ke krajním náhledům, i když myš cestou přejede po Docku přes sousední ikony.
     /// Strana Docku se určuje stejně jako při umísťování panelu – panel ikonu
     /// mírně překrývá, takže ji nejde odvodit z jejich vzájemné polohy.
-    private func corridor(item: CGRect) -> CGRect {
+    private func safeZone(item: CGRect) -> CGPath {
         let p = panel.frame
-        let slack: CGFloat = 20
-        guard let screen = Geometry.screen(containing: item) else { return .zero }
+        let slack: CGFloat = 48
+        guard let screen = Geometry.screen(containing: item) else { return CGMutablePath() }
+        let s = screen.frame
+        let rect: CGRect
         switch edge(of: item, on: screen) {
         case .bottom:
-            return CGRect(x: item.minX - slack, y: item.maxY - 4,
-                          width: item.width + 2 * slack, height: max(0, p.minY - item.maxY) + 8)
+            let x0 = min(p.minX, item.minX) - slack, x1 = max(p.maxX, item.maxX) + slack
+            rect = CGRect(x: x0, y: s.minY, width: x1 - x0, height: p.minY - s.minY + 2)
         case .left:
-            return CGRect(x: item.maxX - 4, y: item.minY - slack,
-                          width: max(0, p.minX - item.maxX) + 8, height: item.height + 2 * slack)
+            let y0 = min(p.minY, item.minY) - slack, y1 = max(p.maxY, item.maxY) + slack
+            rect = CGRect(x: s.minX, y: y0, width: p.minX - s.minX + 2, height: y1 - y0)
         case .right:
-            return CGRect(x: min(p.maxX, item.minX) - 4, y: item.minY - slack,
-                          width: max(0, item.minX - p.maxX) + 8, height: item.height + 2 * slack)
+            let y0 = min(p.minY, item.minY) - slack, y1 = max(p.maxY, item.maxY) + slack
+            rect = CGRect(x: p.maxX - 2, y: y0, width: s.maxX - p.maxX + 2, height: y1 - y0)
         }
+        return CGPath(rect: rect, transform: nil)
     }
 }
