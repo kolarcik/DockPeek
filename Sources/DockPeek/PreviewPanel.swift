@@ -404,7 +404,7 @@ final class PreviewController {
 
         if !windows.isEmpty {
             let ids = windows.compactMap(\.id)
-            // Živé náhledy jen u oken na obrazovce – minimalizovaná okna se nekreslí.
+            // Obnovování náhledů (každé 3 s) jen u oken na obrazovce – minimalizovaná se nekreslí.
             let liveIDs = windows.filter { !$0.isMinimized }.compactMap(\.id)
             live.start(ids: liveIDs)
             Task { @MainActor [weak self] in
