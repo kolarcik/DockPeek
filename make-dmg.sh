@@ -63,6 +63,12 @@ else
     codesign --force --sign "$IDENTITY" "$DMG"
 fi
 
+# Pomocné kopie aplikace smaž a odregistruj – jinak si je macOS může vybrat při
+# spuštění po přihlášení místo aplikace ve složce Aplikace.
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+"$LSREGISTER" -u "$PWD/$APP" "$PWD/$STAGE/DockPeek.app" 2>/dev/null || true
+rm -rf "$DIST"
+
 if [ "$DEVELOPER_ID" = 1 ] && [ -n "${NOTARY_PROFILE:-}" ]; then
     echo "==> Notarizace (profil $NOTARY_PROFILE) – může trvat pár minut"
     xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait

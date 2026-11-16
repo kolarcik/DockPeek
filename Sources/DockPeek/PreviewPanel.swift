@@ -297,6 +297,10 @@ final class PreviewContentView: NSVisualEffectView {
             : NSColor(white: 0.0, alpha: 0.12).cgColor
     }
 
+    func clear(ids: [CGWindowID]) {
+        for thumb in thumbnails where thumb.info.id.map(ids.contains) == true { thumb.setImage(nil) }
+    }
+
     func update(images: [CGWindowID: CGImage]) {
         for thumb in thumbnails {
             if let id = thumb.info.id, let image = images[id] { thumb.setImage(image) }
@@ -319,6 +323,15 @@ final class PreviewController {
     /// Nad touto ikonou uživatel otevřel nabídku – dokud z ní myš neodjede, panel neukazuj.
     private var suppressedItem: DockItem?
     private var imageCache: [CGWindowID: CGImage] = [:]
+    private let live = LiveThumbnails()
+
+    init() {
+        live.onFrame = { [weak self] id, image in
+            guard let self, self.panel.isVisible else { return }
+            self.imageCache[id] = image
+            self.content?.update(images: [id: image])
+        }
+    }
     /// Naposledy zjištěný tón aplikace (bundle ID → tmavá?), aby panel neblikal při dalším najetí.
     private var appTone: [String: Bool] = [:]
     private var pendingShow: DispatchWorkItem?
@@ -391,9 +404,20 @@ final class PreviewController {
 
         if !windows.isEmpty {
             let ids = windows.compactMap(\.id)
+            // Živé náhledy jen u oken na obrazovce – minimalizovaná okna se nekreslí.
+            let liveIDs = windows.filter { !$0.isMinimized }.compactMap(\.id)
+            live.start(ids: liveIDs)
             Task { @MainActor [weak self] in
                 let images = await Thumbnailer.capture(ids: ids)
                 guard let self, gen == self.generation else { return }
+                // Okno, které se nepodařilo nasnímat, nesmí dál ukazovat starý snímek
+                // z mezipaměti (např. stav z doby spuštění Macu) – radši ikonu aplikace.
+                let failed = ids.filter { images[$0] == nil }
+                if !failed.isEmpty {
+                    Log.write("Snímek se nepodařil u \(failed.count) oken – mažu starý náhled")
+                    for id in failed { self.imageCache[id] = nil }
+                    self.content?.clear(ids: failed)
+                }
                 // Cache drž jen pro okna, která ještě existují (jinak by rostla donekonečna).
                 if self.imageCache.count > 60 {
                     let live = Set(self.currentWindows.compactMap(\.id))
@@ -487,6 +511,7 @@ final class PreviewController {
         currentWindows = WindowProvider.windows(for: app)
         if currentWindows.isEmpty && currentMedia == nil { hide(); return }
         render()
+        live.start(ids: currentWindows.filter { !$0.isMinimized }.compactMap(\.id))
     }
 
     private func initialAppearance(for app: NSRunningApplication, windows: [WindowInfo]) -> NSAppearance? {
@@ -510,6 +535,7 @@ final class PreviewController {
     }
 
     func hide() {
+        live.stop()
         pendingShow?.cancel()
         generation += 1
         trackingTimer?.invalidate()
